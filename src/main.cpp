@@ -78,7 +78,7 @@ int main() {
     ```execute
     cat main.py
     ```
-    )";z
+    )";
 
     std::vector<Message> history;
     history.push_back({"system", system_prompt});
