@@ -12,6 +12,8 @@
 #include "ollama.hpp"
 #include "shell.hpp"
 #include "completion.hpp"
+#include "utils.hpp"
+#include "file_ops.hpp"
 
 enum class Mode {
     Agent,
@@ -51,15 +53,32 @@ int main() {
     // System prompt
     std::string system_prompt = R"(
     You are a Linux Terminal Assistant running on Arch Linux (Fish Shell).
+    
     [IMPORTANT RULES]
-    1. Before answering, you MUST provide your thinking process enclosed in <think> and </think> tags.
-    2. If the user asks to perform a system action, you MUST output the command inside a code block labeled 'execute'.
-    Example:
-    <think>User wants to update npm.</think>
-    ```execute
-    npm update -g
+    1. First, analyze the user's request and write your thinking process enclosed in <think> and </think> tags.
+    2. YOU MUST CLOSE THE </think> TAG BEFORE WRITING YOUR FINAL RESPONSE.
+    3. The content inside <think>...</think> is for your internal reasoning only. The user will not see it as the main answer.
+    4. After </think>, write the actual response to the user.
+    5. If the user asks to perform a system action, output the command inside a code block labeled 'execute'.
+    6. To WRITE a file, use a code block labeled 'write:filename'.
+    7. To READ a file, use 'cat filename' inside an 'execute' block.
+    8. NEVER use the 'execute' or 'write' tags for examples or explanations. Only use them when you intend to trigger an actual action.
+    9. If you want to show an example of code creation, just use a normal code block without the 'write:' prefix.
+
+    Example (Write):
+    <think>User wants to create main.py.</think>
+    I will create the file for you.
+    ```write:main.py
+    print("Hello World")
     ```
-    )";
+
+    Example (Read):
+    <think>User wants to read main.py.</think>
+    I will read the file.
+    ```execute
+    cat main.py
+    ```
+    )";z
 
     std::vector<Message> history;
     history.push_back({"system", system_prompt});
@@ -67,9 +86,13 @@ int main() {
     Mode current_mode = Mode::Agent;
     std::regex re_think(R"(<think>([\s\S]*?)</think>)");
     std::regex re_execute(R"(```execute\s*([\s\S]*?)\s*```)");
+    std::regex re_write(R"(```write:([^\s`]+)\s*([\s\S]*?)\s*```)");
 
+    bool auto_continue = false;
     while (true) {
-        std::string prompt;
+        std::string input;
+        if (!auto_continue) {
+            std::string prompt;
         char cwd[PATH_MAX];
         if (getcwd(cwd, sizeof(cwd)) == NULL) {
             strcpy(cwd, "unknown");
@@ -88,7 +111,7 @@ int main() {
             break;
         }
 
-        std::string input(input_cstr);
+        input = input_cstr;
         if (!input.empty()) {
             add_history(input_cstr);
         }
@@ -137,6 +160,8 @@ int main() {
             continue;
         }
 
+        }
+        
         if (current_mode == Mode::Shell) {
             // Handle cd command manually
             if (input.rfind("cd ", 0) == 0 || input == "cd") {
@@ -160,7 +185,12 @@ int main() {
             // Add to history for AI context
             history.push_back({"user", "Executed Shell Command: " + input + "\nOutput:\n" + output});
         } else {
-            history.push_back({"user", input});
+            if (!auto_continue) {
+                history.push_back({"user", input});
+            } else {
+                std::cout << ANSI::CYAN << "(Auto-continuing...)" << ANSI::RESET << std::endl;
+                auto_continue = false;
+            }
             std::cout << "Thinking..." << std::flush;
             
             std::string response = ollama.chat(selected_model, history);
@@ -171,29 +201,66 @@ int main() {
             std::string final_answer = response;
             if (std::regex_search(response, match, re_think)) {
                 std::string thought = match[1].str();
-                std::cout << "\n\033[1;90m🧠 Thinking Process:\033[0m" << std::endl;
-                std::cout << "\033[90m\033[3m" << trim(thought) << "\033[0m\n" << std::endl;
-                std::cout << "\033[1;90m----------------------------------------\033[0m\n" << std::endl;
+                std::cout << "\n" << ANSI::GRAY << ANSI::ITALIC << "🧠 Thinking Process:" << ANSI::RESET << std::endl;
+                // Render markdown inside thought too, but keep it gray/dim
+                std::string rendered_thought = MarkdownRenderer::render(trim(thought));
+                // We might want to force gray on the rendered output, but ANSI codes might reset it.
+                // For simplicity, let's just print it as is, maybe wrapped in gray if renderer supports it.
+                // Or just print raw text for thought to avoid color clashes.
+                // Let's try to print it with gray color, assuming renderer resets to nothing (which defaults to terminal color).
+                // But renderer uses RESET which resets to default.
+                // Let's just print thought as gray text for now, maybe without full markdown rendering to keep it subtle.
+                std::cout << ANSI::GRAY << trim(thought) << ANSI::RESET << "\n" << std::endl;
+                std::cout << ANSI::GRAY << "----------------------------------------" << ANSI::RESET << "\n" << std::endl;
                 
                 final_answer = std::regex_replace(response, re_think, "");
             }
             
-            std::cout << trim(final_answer) << std::endl;
+            std::cout << MarkdownRenderer::render(trim(final_answer)) << std::endl;
             history.push_back({"assistant", response});
 
             // Parse execute block
             if (std::regex_search(response, match, re_execute)) {
                 std::string command = trim(match[1].str());
-                std::cout << "\n[!] AI wants to execute:\n\033[33m" << command << "\033[0m" << std::endl;
+                std::cout << "\n[!] AI wants to execute:\n" << ANSI::YELLOW << command << ANSI::RESET << std::endl;
                 
                 char* confirm = readline("Execute? (y/n) ");
                 if (confirm && (strcmp(confirm, "y") == 0 || strcmp(confirm, "Y") == 0)) {
                     std::cout << "Running..." << std::endl;
                     std::string output = shell.execute(command);
                     history.push_back({"user", "System Output: " + output});
+                    auto_continue = true;
                 } else {
                     std::cout << "Cancelled." << std::endl;
                     history.push_back({"user", "User cancelled execution."});
+                }
+                if (confirm) free(confirm);
+            }
+
+            // Parse write block
+            if (std::regex_search(response, match, re_write)) {
+                std::string filename = trim(match[1].str());
+                std::string content = match[2].str();
+                // Trim leading/trailing newline from content if present
+                if (!content.empty() && content.front() == '\n') content.erase(0, 1);
+                if (!content.empty() && content.back() == '\n') content.pop_back();
+
+                std::cout << "\n[!] AI wants to WRITE to file: " << ANSI::CYAN << filename << ANSI::RESET << std::endl;
+                std::cout << "Content preview:\n" << ANSI::GRAY << content.substr(0, 100) << (content.length() > 100 ? "..." : "") << ANSI::RESET << std::endl;
+                
+                char* confirm = readline("Write file? (y/n) ");
+                if (confirm && (strcmp(confirm, "y") == 0 || strcmp(confirm, "Y") == 0)) {
+                    if (FileOperations::write_file(filename, content)) {
+                        std::cout << "File written successfully." << std::endl;
+                        history.push_back({"user", "System: File " + filename + " written successfully."});
+                        auto_continue = true;
+                    } else {
+                        std::cout << "Failed to write file." << std::endl;
+                        history.push_back({"user", "System: Failed to write file " + filename});
+                    }
+                } else {
+                    std::cout << "Cancelled." << std::endl;
+                    history.push_back({"user", "User cancelled file write."});
                 }
                 if (confirm) free(confirm);
             }
