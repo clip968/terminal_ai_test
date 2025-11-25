@@ -19,6 +19,7 @@ Makefile
 compile_commands.json
 CTestTestfile.cmake
 _deps/
+.cache/
 
 # Rust (Legacy)
 /target/
