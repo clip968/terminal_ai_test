@@ -1,1 +1,31 @@
-/target
+# Build Artifacts
+/build/
+/bin/
+/lib/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+
+# Executable
+terminal_ai_test
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+compile_commands.json
+CTestTestfile.cmake
+_deps/
+
+# Rust (Legacy)
+/target/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
