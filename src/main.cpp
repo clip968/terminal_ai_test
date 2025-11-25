@@ -65,6 +65,8 @@ int main() {
     8. NEVER use the 'execute' or 'write' tags for examples or explanations. Only use them when you intend to trigger an actual action.
     9. If you want to show an example of code creation, just use a normal code block without the 'write:' prefix.
     10. You MUST answer in Korean.
+    11. When searching for a specific file, use the 'find' command (e.g., 'find . -name "filename"').
+    12. When you need to understand the project structure or look for files without a specific name, use 'ls -R' or 'cd' to explore.
 
     Example (Write):
     <think>User wants to create main.py.</think>
